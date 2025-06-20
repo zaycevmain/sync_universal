@@ -8,7 +8,7 @@ LOG_FILE="$(dirname "$0")/sync_universal.log"
 # --- Функции ---
 
 log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
 }
 
 check_command() {
@@ -111,9 +111,24 @@ manage_postgres() {
 }
 
 rsync_app_data() {
-    # ... (rsync logic from previous scripts, simplified)
-    log "[ШАГ] Копирую данные приложения с $1 на $5..."
-    # rsync command here
+    local src_host="$1" src_user="$2" src_pass="$3" src_path="$4"
+    local dst_host="$5" dst_user="$6" dst_pass="$7" dst_path="$8"
+    log "[ШАГ] Копирую данные приложения с $src_host на $dst_host..."
+    
+    # Создаём временную директорию на машине, где запущен скрипт
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    log "[ИНФО] Временная директория: $tmp_dir"
+
+    # Копируем с основного сервера во временную директорию
+    sshpass -p "$src_pass" rsync -a --delete -e "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" "$src_user@$src_host:$src_path/" "$tmp_dir/"
+    
+    # Копируем из временной директории на резервный сервер
+    sshpass -p "$dst_pass" rsync -a --delete -e "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" "$tmp_dir/" "$dst_user@$dst_host:$dst_path/"
+    
+    # Удаляем временную директорию
+    rm -rf "$tmp_dir"
+    log "[ИНФО] Временная директория удалена."
 }
 
 run_pg_basebackup() {
@@ -146,6 +161,7 @@ main() {
     backup_ssh_pass=$(parse_config backup ssh_pass)
     backup_app_data_dir=$(parse_config backup app_data_dir)
     backup_pg_data_dir=$(parse_config backup pg_data_dir)
+    backup_pg_conf_dir=$(parse_config backup pg_conf_dir)
     backup_app_service=$(parse_config backup app_service)
 
     # Генерация пароля для репликатора
@@ -164,6 +180,15 @@ main() {
     rsync_app_data "$main_ssh_host" "$main_ssh_user" "$main_ssh_pass" "$main_app_data_dir" "$backup_ssh_host" "$backup_ssh_user" "$backup_ssh_pass" "$backup_app_data_dir"
     run_pg_basebackup "$backup_ssh_host" "$backup_ssh_user" "$backup_ssh_pass" "$backup_pg_data_dir" "$rep_user" "$rep_pass" "$main_ssh_host"
     
+    # Замена IP в конфигах на резервном
+    log "[ШАГ] Замена IP-адресов в конфигурации PostgreSQL на резервном сервере..."
+    local old_ip="$main_ssh_host"
+    local new_ip="$backup_ssh_host"
+    for conf_file in postgresql.conf pg_hba.conf; do
+        local conf_path="$backup_pg_conf_dir/$conf_file"
+        sshpass -p "$backup_ssh_pass" ssh -o StrictHostKeyChecking=no "$backup_ssh_user@$backup_ssh_host" "if [ -f '$conf_path' ]; then sudo sed -i 's/$old_ip/$new_ip/g' '$conf_path'; fi"
+    done
+
     # Запуск
     manage_postgres "Запуск" "$backup_ssh_host" "$backup_ssh_user" "$backup_ssh_pass"
     # Тут можно добавить ожидание сокета
