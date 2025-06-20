@@ -67,20 +67,19 @@ ensure_deps() {
 
 ensure_replication_user_and_hba() {
     local main_ssh_host="$1" main_ssh_user="$2" main_ssh_pass="$3" main_pg_conf_dir="$4" main_pg_user="$5" main_pg_pass="$6" rep_user="$7" rep_pass="$8" backup_ip="$9"
-    log "[ШАГ] Настройка пользователя $rep_user для репликации на основном сервере..."
-    
-    local sql_command="
-DO \$\$
-BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '$rep_user') THEN
-        CREATE ROLE \"$rep_user\" WITH REPLICATION LOGIN ENCRYPTED PASSWORD '$rep_pass';
-    ELSE
-        ALTER ROLE \"$rep_user\" WITH REPLICATION LOGIN ENCRYPTED PASSWORD '$rep_pass';
-    END IF;
-END
-\$\$;"
+    log "[ШАГ] Настройка пользователя '$rep_user' для репликации на основном сервере..."
 
-    sshpass -p "$main_ssh_pass" ssh -o StrictHostKeyChecking=no "$main_ssh_user@$main_ssh_host" "PGPASSWORD='$main_pg_pass' psql -h localhost -U '$main_pg_user' -d postgres -c \"$sql_command\""
+    # Пытаемся создать пользователя. Ошибку (если он уже есть) игнорируем.
+    local create_sql="CREATE ROLE \"$rep_user\" WITH REPLICATION LOGIN ENCRYPTED PASSWORD '$rep_pass';"
+    sshpass -p "$main_ssh_pass" ssh -o StrictHostKeyChecking=no "$main_ssh_user@$main_ssh_host" \
+        "PGPASSWORD='$main_pg_pass' psql -h localhost -U '$main_pg_user' -d postgres -c \"$create_sql\"" \
+        || log "[ИНФО] Не удалось создать пользователя '$rep_user' (вероятно, уже существует)."
+
+    # В любом случае устанавливаем актуальный пароль.
+    local alter_sql="ALTER ROLE \"$rep_user\" WITH PASSWORD '$rep_pass';"
+    sshpass -p "$main_ssh_pass" ssh -o StrictHostKeyChecking=no "$main_ssh_user@$main_ssh_host" \
+        "PGPASSWORD='$main_pg_pass' psql -h localhost -U '$main_pg_user' -d postgres -c \"$alter_sql\""
+    log "[ИНФО] Пароль для пользователя '$rep_user' успешно установлен."
 
     log "[ШАГ] Проверка pg_hba.conf для репликации..."
     local hba_string="host    replication     $rep_user    $backup_ip/32    md5"
