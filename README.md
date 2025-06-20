@@ -1,4 +1,5 @@
 # Universal PostgreSQL & Application Data Synchronization Tool / Универсальная утилита для синхронизации данных PostgreSQL и приложений
+![Screenshot](https://github.com/zaycevmain/sync_universal/blob/main/screen.png)
 ---
 
 A script for "hot" synchronization of application data and a PostgreSQL database cluster from a primary to a backup server. It uses `rsync` for application files and `pg_basebackup` for a consistent, live backup of the PostgreSQL cluster.
