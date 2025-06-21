@@ -87,9 +87,11 @@ The script is controlled by the `sync_universal.conf` file.
 -   `app_data_dir`: Absolute path to the application's data directory. / Абсолютный путь к каталогу данных приложения.
 -   `pg_data_dir`: Absolute path to the PostgreSQL data directory (e.g., `/var/lib/postgresql/17/main`). / Абсолютный путь к каталогу данных PostgreSQL.
 -   `pg_conf_dir`: Absolute path to the PostgreSQL configuration directory (e.g., `/etc/postgresql/17/main`). / Абсолютный путь к каталогу конфигурации PostgreSQL.
+-   `pg_port`: The port PostgreSQL is running on (default is 5432). / Порт, на котором работает PostgreSQL (по умолчанию 5432).
 -   `app_service`: The name of the `systemd` service for your application (e.g., `my-app.service`). This service is NOT stopped on the primary server during sync. / Имя `systemd`-сервиса вашего приложения. Этот сервис НЕ останавливается на основном сервере во время синхронизации.
 
 ### `[backup]` - Backup Server / Резервный сервер
 -   `ssh_host`, `ssh_user`, `ssh_pass`: Connection details for the backup server. / Данные для подключения к резервному серверу.
 -   `app_data_dir`, `pg_data_dir`, `pg_conf_dir`: Corresponding paths on the backup server where data will be synced. / Соответствующие пути на резервном сервере, куда будут синхронизированы данные.
+-   `pg_port`: The port PostgreSQL should run on after synchronization (default is 5432). / Порт, на котором PostgreSQL должен будет работать после синхронизации (по умолчанию 5432).
 -   `app_service`: The name of the application's `systemd` service on the backup server, which will be stopped before sync and started after. / Имя `systemd`-сервиса приложения на резервном сервере, который будет остановлен перед синхронизацией и запущен после. 
