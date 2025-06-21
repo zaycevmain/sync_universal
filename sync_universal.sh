@@ -66,19 +66,24 @@ ensure_deps() {
 }
 
 ensure_replication_user_and_hba() {
-    local main_ssh_host="$1" main_ssh_user="$2" main_ssh_pass="$3" main_pg_conf_dir="$4" main_pg_user="$5" main_pg_pass="$6" rep_user="$7" rep_pass="$8" backup_ip="$9"
+    local main_ssh_host="$1" main_ssh_user="$2" main_ssh_pass="$3" main_pg_conf_dir="$4" main_pg_user="$5" main_pg_pass="$6" rep_user="$7" rep_pass="$8" backup_ip="$9" main_pg_port="${10}"
     log "[ШАГ] Настройка пользователя '$rep_user' для репликации на основном сервере..."
+
+    # Проверка порта
+    if ! [[ "$main_pg_port" =~ ^[0-9]+$ ]]; then
+        log "[ОШИБКА] Некорректный порт PostgreSQL: '$main_pg_port'"; exit 1
+    fi
 
     # Пытаемся создать пользователя. Ошибку (если он уже есть) игнорируем.
     local create_sql="CREATE ROLE \"$rep_user\" WITH REPLICATION LOGIN ENCRYPTED PASSWORD '$rep_pass';"
     sshpass -p "$main_ssh_pass" ssh -o StrictHostKeyChecking=no "$main_ssh_user@$main_ssh_host" \
-        "PGPASSWORD='$main_pg_pass' psql -h localhost -U '$main_pg_user' -d postgres -c \"$create_sql\"" \
+        "PGPASSWORD='$main_pg_pass' psql -h localhost -p $main_pg_port -U '$main_pg_user' -d postgres -v ON_ERROR_STOP=1 -c \"$create_sql\"" \
         || log "[ИНФО] Не удалось создать пользователя '$rep_user' (вероятно, уже существует)."
 
     # В любом случае устанавливаем актуальный пароль.
     local alter_sql="ALTER ROLE \"$rep_user\" WITH PASSWORD '$rep_pass';"
     sshpass -p "$main_ssh_pass" ssh -o StrictHostKeyChecking=no "$main_ssh_user@$main_ssh_host" \
-        "PGPASSWORD='$main_pg_pass' psql -h localhost -U '$main_pg_user' -d postgres -c \"$alter_sql\""
+        "PGPASSWORD='$main_pg_pass' psql -h localhost -p $main_pg_port -U '$main_pg_user' -d postgres -v ON_ERROR_STOP=1 -c \"$alter_sql\""
     log "[ИНФО] Пароль для пользователя '$rep_user' успешно установлен."
 
     log "[ШАГ] Проверка pg_hba.conf для репликации..."
@@ -131,13 +136,33 @@ rsync_app_data() {
 }
 
 run_pg_basebackup() {
-    local backup_ssh_host="$1" backup_ssh_user="$2" backup_ssh_pass="$3" backup_pg_data_dir="$4" rep_user="$5" rep_pass="$6" main_ssh_host="$7"
+    local backup_ssh_host="$1" backup_ssh_user="$2" backup_ssh_pass="$3" backup_pg_data_dir="$4" rep_user="$5" rep_pass="$6" main_ssh_host="$7" main_pg_port="$8"
     log "[ШАГ] Копирую кластер PostgreSQL через pg_basebackup..."
+    if ! [[ "$main_pg_port" =~ ^[0-9]+$ ]]; then
+        log "[ОШИБКА] Некорректный порт PostgreSQL: '$main_pg_port'"; exit 1
+    fi
     sshpass -p "$backup_ssh_pass" ssh -o StrictHostKeyChecking=no "$backup_ssh_user@$backup_ssh_host" "
         sudo rm -rf \"$backup_pg_data_dir\"/*
-        PGPASSWORD='$rep_pass' pg_basebackup -h '$main_ssh_host' -U '$rep_user' -D '$backup_pg_data_dir' -Fp -Xs -P -R
+        PGPASSWORD='$rep_pass' pg_basebackup -h '$main_ssh_host' -p $main_pg_port -U '$rep_user' -D '$backup_pg_data_dir' -Fp -Xs -P -R
         sudo chown -R postgres:postgres \"$backup_pg_data_dir\"
     "
+}
+
+wait_for_port() {
+    local host="$1" user="$2" pass="$3" port="$4"
+    log "[ШАГ] Ожидание доступности порта $port на $host..."
+    if ! [[ "$port" =~ ^[0-9]+$ ]]; then
+        log "[ОШИБКА] Некорректный порт PostgreSQL: '$port'"; exit 1
+    fi
+    for i in {1..30}; do
+        if sshpass -p "$pass" ssh -o StrictHostKeyChecking=no "$user@$host" "ss -tln | grep -q ':$port '"; then
+            log "[ИНФО] Порт $port доступен."
+            return 0
+        fi
+        sleep 1
+    done
+    log "[ОШИБКА] Порт $port так и не стал доступен."
+    return 1
 }
 
 # --- Основной скрипт ---
@@ -154,6 +179,7 @@ main() {
     main_app_data_dir=$(parse_config main app_data_dir)
     main_pg_data_dir=$(parse_config main pg_data_dir)
     main_pg_conf_dir=$(parse_config main pg_conf_dir)
+    main_pg_port=$(parse_config main pg_port)
 
     backup_ssh_host=$(parse_config backup ssh_host)
     backup_ssh_user=$(parse_config backup ssh_user)
@@ -162,6 +188,7 @@ main() {
     backup_pg_data_dir=$(parse_config backup pg_data_dir)
     backup_pg_conf_dir=$(parse_config backup pg_conf_dir)
     backup_app_service=$(parse_config backup app_service)
+    backup_pg_port=$(parse_config backup pg_port)
 
     # Генерация пароля для репликатора
     rep_pass=$(openssl rand -base64 16)
@@ -170,14 +197,14 @@ main() {
     # Подготовка
     ensure_deps "$main_ssh_host" "$main_ssh_user" "$main_ssh_pass"
     ensure_deps "$backup_ssh_host" "$backup_ssh_user" "$backup_ssh_pass"
-    ensure_replication_user_and_hba "$main_ssh_host" "$main_ssh_user" "$main_ssh_pass" "$main_pg_conf_dir" "$main_pg_user" "$main_pg_pass" "$rep_user" "$rep_pass" "$backup_ssh_host"
+    ensure_replication_user_and_hba "$main_ssh_host" "$main_ssh_user" "$main_ssh_pass" "$main_pg_conf_dir" "$main_pg_user" "$main_pg_pass" "$rep_user" "$rep_pass" "$backup_ssh_host" "$main_pg_port"
 
     # Синхронизация
     manage_service "Остановка" "$backup_ssh_host" "$backup_ssh_user" "$backup_ssh_pass" "$backup_app_service"
     manage_postgres "Остановка" "$backup_ssh_host" "$backup_ssh_user" "$backup_ssh_pass"
     
     rsync_app_data "$main_ssh_host" "$main_ssh_user" "$main_ssh_pass" "$main_app_data_dir" "$backup_ssh_host" "$backup_ssh_user" "$backup_ssh_pass" "$backup_app_data_dir"
-    run_pg_basebackup "$backup_ssh_host" "$backup_ssh_user" "$backup_ssh_pass" "$backup_pg_data_dir" "$rep_user" "$rep_pass" "$main_ssh_host"
+    run_pg_basebackup "$backup_ssh_host" "$backup_ssh_user" "$backup_ssh_pass" "$backup_pg_data_dir" "$rep_user" "$rep_pass" "$main_ssh_host" "$main_pg_port"
     
     # Замена IP в конфигах на резервном
     log "[ШАГ] Замена IP-адресов в конфигурации PostgreSQL на резервном сервере..."
@@ -190,7 +217,7 @@ main() {
 
     # Запуск
     manage_postgres "Запуск" "$backup_ssh_host" "$backup_ssh_user" "$backup_ssh_pass"
-    # Тут можно добавить ожидание сокета
+    wait_for_port "$backup_ssh_host" "$backup_ssh_user" "$backup_ssh_pass" "$backup_pg_port"
     manage_service "Запуск" "$backup_ssh_host" "$backup_ssh_user" "$backup_ssh_pass" "$backup_app_service"
 
     log "==================== СИНХРОНИЗАЦИЯ УСПЕШНО ЗАВЕРШЕНА ===================="
